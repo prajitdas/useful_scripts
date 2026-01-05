@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# git-sync — macOS-first, Linux-compatible
+# Supports: local runs, cron, systemd, CI
+# ==============================================================================
+
+# ----------------------------
+# Configuration (override via env)
+# ----------------------------
+REPO_DIR="${REPO_DIR:-$PWD}"
+LOG_DIR="${LOG_DIR:-}"                  # optional override
+JSON_LOGS="${JSON_LOGS:-1}"             # 1=json, 0=plain
+USE_SYSLOG="${USE_SYSLOG:-0}"            # 1=send to syslog, 0=off
+SYSLOG_TAG="${SYSLOG_TAG:-git-sync}"
+COMMIT_SIGN="${COMMIT_SIGN:-1}"          # 1=git commit -S, 0=no signing
+COMMIT_MSG="${COMMIT_MSG:-}"             # auto-generated if empty
+DRY_RUN="${DRY_RUN:-0}"                  # 1=log only
+PULL_MODE="${PULL_MODE:-ff-only}"        # ff-only | rebase | merge
+
+# Non-interactive / CI safe
+export GIT_TERMINAL_PROMPT=0
+export GIT_EDITOR=:
+export EDITOR=:
+
+# ----------------------------
+# Portable timestamp (macOS + Linux)
+# ----------------------------
+ts_iso() {
+  date '+%Y-%m-%dT%H:%M:%S%z'
+}
+
+# ----------------------------
+# LOG DIRECTORY RESOLUTION (NO SUBSHELLS)
+# ----------------------------
+LOG_DIR_RESOLVED="/tmp/git-sync"   # hard fallback
+
+if [[ -n "${LOG_DIR:-}" ]]; then
+  LOG_DIR_RESOLVED="$LOG_DIR"
+elif [[ -w "/var/log" ]]; then
+  LOG_DIR_RESOLVED="/var/log/git-sync"
+elif [[ -n "${XDG_STATE_HOME:-}" ]]; then
+  LOG_DIR_RESOLVED="${XDG_STATE_HOME}/git-sync"
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+  LOG_DIR_RESOLVED="${HOME}/Library/Logs/git-sync"
+elif [[ -n "${HOME:-}" ]]; then
+  LOG_DIR_RESOLVED="${HOME}/.local/state/git-sync"
+fi
+
+mkdir -p "$LOG_DIR_RESOLVED" 2>/dev/null || {
+  LOG_DIR_RESOLVED="/tmp/git-sync"
+  mkdir -p "$LOG_DIR_RESOLVED" 2>/dev/null || true
+}
+
+LOG_FILE="${LOG_DIR_RESOLVED}/git_sync_$(date +%Y%m%d_%H%M%S).log"
+
+# Fail fast if log file cannot be created
+if ! ( umask 077; : > "$LOG_FILE" ) 2>/dev/null; then
+  echo "ERROR: Cannot write log file: $LOG_FILE" >&2
+  ls -ld "$LOG_DIR_RESOLVED" >&2 || true
+  exit 1
+fi
+
+# ----------------------------
+# Logging helpers
+# ----------------------------
+json_escape() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY' "$1"
+import json,sys
+print(json.dumps(sys.argv[1]))
+PY
+  else
+    local s="${1//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '"%s"' "$s"
+  fi
+}
+
+emit() {
+  local level="$1"; shift
+  local msg="$*"
+  local ts; ts="$(ts_iso)"
+  local line
+
+  if [[ "$JSON_LOGS" == "1" ]]; then
+    line=$(printf '{"ts":"%s","level":"%s","tag":"%s","repo":%s,"msg":%s}' \
+      "$ts" "$level" "$SYSLOG_TAG" "$(json_escape "$REPO_DIR")" "$(json_escape "$msg")")
+  else
+    line=$(printf '[%s] %-5s %s' "$ts" "$level" "$msg")
+  fi
+
+  echo "$line"
+  echo "$line" >> "$LOG_FILE" || true
+
+  if [[ "$USE_SYSLOG" == "1" ]] && command -v logger >/dev/null 2>&1; then
+    logger -t "$SYSLOG_TAG" -- "$line" || true
+  fi
+}
+
+emit info "Log file: $LOG_FILE"
+emit info "Starting git sync"
+
+# ----------------------------
+# Preconditions
+# ----------------------------
+if [[ ! -d "$REPO_DIR" ]]; then
+  emit error "REPO_DIR does not exist: $REPO_DIR"
+  exit 1
+fi
+
+cd "$REPO_DIR"
+
+if [[ ! -d ".git" ]]; then
+  emit error "Not a git repository: $REPO_DIR"
+  exit 1
+fi
+
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [[ -z "$BRANCH" || "$BRANCH" == "HEAD" ]]; then
+  emit error "Detached HEAD or unable to determine branch"
+  exit 1
+fi
+
+if ! UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null)"; then
+  emit error "No upstream configured for '$BRANCH'"
+  exit 1
+fi
+
+emit info "Branch: $BRANCH"
+emit info "Upstream: $UPSTREAM"
+
+# ----------------------------
+# Pull
+# ----------------------------
+if [[ "$DRY_RUN" == "1" ]]; then
+  emit info "DRY_RUN: skipping pull"
+else
+  case "$PULL_MODE" in
+    ff-only) git pull --ff-only ;;
+    rebase)  git pull --rebase ;;
+    merge)   git pull ;;
+    *)       git pull --ff-only ;;
+  esac
+  emit info "Pull successful"
+fi
+
+# ----------------------------
+# Stage + Commit
+# ----------------------------
+git add -A
+
+if git diff --cached --quiet; then
+  emit info "No changes to commit"
+else
+  if [[ -z "$COMMIT_MSG" ]]; then
+    COMMIT_MSG="chore(auto-sync): ${BRANCH} @ $(date '+%Y-%m-%d %H:%M:%S')"
+    emit info "Auto-generated commit message"
+  fi
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    emit info "DRY_RUN: skipping commit"
+  else
+    set +e
+    if [[ "$COMMIT_SIGN" == "1" ]]; then
+      COMMIT_OUT="$(git commit -S -m "$COMMIT_MSG" 2>&1)"
+    else
+      COMMIT_OUT="$(git commit -m "$COMMIT_MSG" 2>&1)"
+    fi
+    STATUS=$?
+    set -e
+
+    if [[ $STATUS -ne 0 ]]; then
+      if echo "$COMMIT_OUT" | grep -qi "nothing to commit"; then
+        emit info "Commit skipped: nothing to commit"
+      else
+        emit error "Commit failed: $COMMIT_OUT"
+        exit $STATUS
+      fi
+    else
+      emit info "Commit created"
+    fi
+  fi
+fi
+
+# ----------------------------
+# Push (only if needed)
+# ----------------------------
+AHEAD="$(git rev-list --count "${UPSTREAM}..HEAD")"
+emit info "Commits ahead of upstream: $AHEAD"
+
+if [[ "$AHEAD" -eq 0 ]]; then
+  emit info "Nothing to push. Exiting cleanly."
+  exit 0
+fi
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  emit info "DRY_RUN: skipping push"
+  exit 0
+fi
+
+set +e
+PUSH_OUT="$(git push 2>&1)"
+STATUS=$?
+set -e
+
+if [[ $STATUS -ne 0 ]]; then
+  emit error "Push failed: $PUSH_OUT"
+  exit 1
+fi
+
+if echo "$PUSH_OUT" | grep -q "Everything up-to-date"; then
+  emit info "Push skipped (already up to date)"
+  exit 0
+fi
+
+emit info "Push successful ($AHEAD commit(s))"
+emit info "Done"

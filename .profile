@@ -26,11 +26,6 @@ if [ -d "$HOME/.local/bin" ] ; then
     PATH="$HOME/.local/bin:$PATH"
 fi
 
-# P4 environment variables
-export P4PORT=ssl:stbu-p4-ful.cisco.com:1666
-export P4USER="$USER"
-export P4CLIENT=prajdas-buildserver
-
 # ls colors using default database
 eval "$(dircolors)"
 alias ls='ls --color=auto'
@@ -76,11 +71,4 @@ then
 	echo -e '\e[0m'
 fi
 
-if ! p4 login -s
-then
-	p4 login
-fi
-p4 sync
-
-source "$HOME/autoinstall/.create_vm_completion.sh"
 export DOCKER_OPTS+=" --insecure-registry dockerhub.cisco.com"

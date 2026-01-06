@@ -1,12 +1,12 @@
-# P4 environment variables
-export P4PORT=ssl:stbu-p4-ful.cisco.com:1666
-export P4USER="$USER"
-export P4CLIENT=prajdas-buildserver
+# ~/.profile: executed by the command interpreter for login shells.
+# This file is not read by bash(1), if ~/.bash_profile or ~/.bash_login
+# exists.
+# see /usr/share/doc/bash/examples/startup-files for examples.
+# the files are located in the bash-doc package.
 
-# ls colors using default database
-eval "$(dircolors)"
-alias ls='ls --color=auto'
-alias grep='grep --color=auto'
+# the default umask is set in /etc/profile; for setting the umask
+# for ssh logins, install and configure the libpam-umask package.
+#umask 022
 
 # if running bash
 if [ -n "$BASH_VERSION" ]; then
@@ -25,6 +25,16 @@ fi
 if [ -d "$HOME/.local/bin" ] ; then
     PATH="$HOME/.local/bin:$PATH"
 fi
+
+# P4 environment variables
+export P4PORT=ssl:stbu-p4-ful.cisco.com:1666
+export P4USER="$USER"
+export P4CLIENT=prajdas-buildserver
+
+# ls colors using default database
+eval "$(dircolors)"
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
 
 # P4 QOL improvements
 ## P4 colored diffs

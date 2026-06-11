@@ -31,9 +31,6 @@ eval "$(dircolors)"
 alias ls='ls --color=auto'
 alias grep='grep --color=auto'
 
-# P4 QOL improvements
-## P4 colored diffs
-export P4DIFF='/usr/bin/diff --color'
 export EDITOR='/usr/bin/vim'
 alias build='./wrims.sh "make -j50 clean distclean && make build"'
 
@@ -70,5 +67,3 @@ then
 	cat ~/.remindme
 	echo -e '\e[0m'
 fi
-
-export DOCKER_OPTS+=" --insecure-registry dockerhub.cisco.com"

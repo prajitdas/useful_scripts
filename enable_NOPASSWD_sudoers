@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# 1. Presence check
+if [ -z "$1" ]; then
+    echo "Usage: $0 <username>"
+    exit 1
+fi
+
+# 2. Assignment
+USER_NAME="$1"
+
+# 3. Content check (alphanumeric only)
+if [[ ! "$USER_NAME" =~ ^[a-zA-Z0-9]+$ ]]; then
+    echo "Error: Username can only contain letters and numbers."
+    exit 1
+fi
+
+echo "Processing user: $USER_NAME"
+
+sudo adduser --gecos "" $USER_NAME
+echo '$USER_NAME ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/$USER_NAME
+sudo chmod 440 /etc/sudoers.d/$USER_NAME
+sudo visudo -cf /etc/sudoers.d/$USER_NAME
